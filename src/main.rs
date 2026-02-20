@@ -30,55 +30,85 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let client = Client::with_config(config);
 
-    let response: Value = client
-        .chat()
-        // seems to mean "bring your own type" and is littered everywhere in the crate
-        .create_byot(json!({
-            "messages": [
-                {
-                    "role": "user",
-                    "content": args.prompt
-                }
-            ],
-            "model": "anthropic/claude-haiku-4.5",
-            "tools": [
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "Read",
-                        "description": "Read and return the contents of a file",
-                        "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "file_path": {
-                            "type": "string",
-                            "description": "The path to the file to read"
+    let mut messages = json!([
+        {
+            "role": "user",
+            "content": args.prompt
+        }
+    ]);
+
+    if let Some(content) = loop {
+        let response: Value = client
+            .chat()
+            // seems to mean "bring your own type" and is littered everywhere in the crate
+            .create_byot(json!({
+                "messages": messages,
+                "model": "anthropic/claude-haiku-4.5",
+                "tools": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "Read",
+                            "description": "Read and return the contents of a file",
+                            "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "file_path": {
+                                "type": "string",
+                                "description": "The path to the file to read"
+                                }
+                            },
+                            "required": ["file_path"]
                             }
-                        },
-                        "required": ["file_path"]
                         }
                     }
-                }
-            ]
-        }))
-        .await?;
+                ]
+            }))
+            .await?;
+        eprintln!(
+            "Assistant returned {} choices.",
+            response["choices"].as_array().unwrap().len()
+        );
+        let choice = &response["choices"][0];
+        messages
+            .as_array_mut()
+            .unwrap()
+            .push(choice["message"].clone());
 
-    // You can use print statements as follows for debugging, they'll be visible when running tests.
-    eprintln!("Logs from your program will appear here!");
-
-    if let Some(calls) = response["choices"][0]["message"]["tool_calls"].as_array() {
-        let call = &calls[0];
-        if let Some(call) = call["function"].as_object() {
-            let _name = call["name"].as_str().unwrap();
-            let args = call["arguments"].as_str().unwrap();
-            let args: read::Args = serde_json::from_str(args).unwrap();
-            if let Ok(contents) = read::read(args) {
-                println!("{}", contents);
-            }
+        if choice["finish_reason"].as_str() == Some("stop")
+            || choice["message"]["tool_calls"].as_array().is_none()
+        {
+            break choice["message"]["content"].as_str().map(|c| c.to_string());
         }
-    }
-    if let Some(content) = response["choices"][0]["message"]["content"].as_str() {
+
+        eprintln!(
+            "Assistant picked {} tools.",
+            choice["message"]["tool_calls"].as_array().unwrap().len()
+        );
+        let call = &choice["message"]["tool_calls"][0];
+        let id = call["id"].as_str().unwrap();
+        if let Some(tool) = call["function"].as_object() {
+            let name = tool["name"].as_str().unwrap();
+            let args: read::Args =
+                serde_json::from_str(tool["arguments"].as_str().unwrap()).unwrap();
+            if let Ok(content) = read::read(args) {
+                eprintln!("Tool call {} (ID {}) created output:", name, id);
+                eprintln!("{}", content);
+                messages.as_array_mut().unwrap().push(json!({
+                    "role": "tool",
+                    "tool_call_id": id,
+                    "content": content
+                }));
+            } else {
+                eprintln!("Tool call {} (ID {}) failed", name, id);
+            }
+        } else {
+            eprintln!("Tool call ID {} function parse failed", id);
+        }
+    } {
         println!("{}", content);
+    } else {
+        eprintln!("Empty message content");
     }
 
     Ok(())
