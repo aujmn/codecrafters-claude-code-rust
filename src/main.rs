@@ -3,6 +3,8 @@ use clap::Parser;
 use serde_json::{Value, json};
 use std::{env, process};
 
+mod read;
+
 #[derive(Parser)]
 #[command(author, version, about)]
 struct Args {
@@ -64,6 +66,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // You can use print statements as follows for debugging, they'll be visible when running tests.
     eprintln!("Logs from your program will appear here!");
 
+    if let Some(calls) = response["choices"][0]["message"]["tool_calls"].as_array() {
+        let call = &calls[0];
+        if let Some(call) = call["function"].as_object() {
+            let _name = call["name"].as_str().unwrap();
+            let args = call["arguments"].as_str().unwrap();
+            let args: read::Args = serde_json::from_str(args).unwrap();
+            if let Ok(contents) = read::read(args) {
+                println!("{}", contents);
+            }
+        }
+    }
     if let Some(content) = response["choices"][0]["message"]["content"].as_str() {
         println!("{}", content);
     }
